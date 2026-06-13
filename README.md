@@ -1,9 +1,9 @@
+> ⚠️ Much of the code is AI-generated and lightly reviewed—treat as experimental
+> and review before running.
+
 # misc
 
 Standalone tools and experiments that don't belong to a larger project.
-
-> ⚠️ Much of the code is AI-generated and lightly reviewed—treat as experimental
-> and review before running.
 
 ## Contents
 
