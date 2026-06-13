@@ -96,3 +96,16 @@ Design notes:
   privileges based on comment text. Only use it on a repo you trust. Set
   `permissionMode` to `acceptEdits` (edits only, no Bash) or `plan` (answer only,
   no changes) to tighten it. Review the diff after any run.
+
+## Development
+
+Pure logic (the stream-json parser and label formatting) lives in `src/parse.ts`
+with no `vscode` import, so it unit-tests in plain Node:
+
+- `yarn test` — run the `node:test` suite (`src/**/*.test.ts`, via Node's
+  built-in TypeScript stripping).
+- `yarn typecheck` — `tsc --noEmit`.
+- `yarn build` — bundle to `dist/extension.js` (esbuild, no type checking).
+
+`extension.ts` is the only file that touches the VS Code API; it imports the
+testable helpers from `parse.ts`.

@@ -1,5 +1,12 @@
 import * as vscode from 'vscode';
 import { spawn } from 'node:child_process';
+import {
+  ActivityNode,
+  ClaudeResult,
+  StreamParser,
+  formatRange as formatLineRange,
+  oneLine,
+} from './parse';
 
 /**
  * Ask Inline
@@ -66,16 +73,6 @@ class ReplyComment implements vscode.Comment {
 let tree: CommentsTreeProvider;
 /** Handle to the view, used to set the activity-bar badge. */
 let treeView: vscode.TreeView<TreeNode>;
-
-/** A single streamed step in a run (one tool call, or the agent's thinking). */
-interface ActivityNode {
-  /** One-line label, e.g. "Edit foo.ts" or "Bash: npm test". */
-  label: string;
-  /** Codicon id for the leaf, chosen by tool. */
-  icon: string;
-  /** Longer detail for the tooltip (full path, full command). */
-  detail?: string;
-}
 
 /**
  * Coalesce tree refreshes: streamed events can arrive in bursts, and firing the
@@ -311,10 +308,7 @@ function usageFooter(outputTokens: number, costUsd: number): string {
 
 /** Human label for a thread's anchor: "line 5" or "lines 5–9" (1-based). */
 function formatRange(range?: vscode.Range): string {
-  if (!range) return 'an unknown location';
-  const start = range.start.line + 1;
-  const end = range.end.line + 1;
-  return start === end ? `line ${start}` : `lines ${start}–${end}`;
+  return formatLineRange(range?.start.line, range?.end.line);
 }
 
 /** Serialize a thread into a plain-text transcript for the model. */
@@ -342,16 +336,6 @@ function buildPrompt(thread: vscode.CommentThread): string {
       'thread. Keep the reply to a short summary of what you did (or your answer ' +
       'if no change was needed). Do not paste large diffs.',
   ].join('\n');
-}
-
-interface ClaudeResult {
-  text: string;
-  /** Actual resolved model id (e.g. `us.anthropic.claude-opus-4-8[1m]`), if known. */
-  model: string;
-  /** Output tokens the run produced, if reported. */
-  outputTokens: number;
-  /** Total cost in USD, if reported. */
-  costUsd: number;
 }
 
 /**
@@ -395,10 +379,8 @@ function runClaude(
   return new Promise<ClaudeResult>((resolve, reject) => {
     const child = spawn(bin, args, { cwd, shell: false });
 
-    let buffer = ''; // holds an incomplete trailing line between data chunks
+    const parser = new StreamParser(onEvent);
     let stderr = '';
-    let result: ClaudeResult | undefined; // set when the final `result` event lands
-    let resultError: Error | undefined;
     let settled = false;
 
     const cleanup = () => {
@@ -420,47 +402,7 @@ function runClaude(
       reject(new Error('cancelled'));
     });
 
-    // Parse complete NDJSON lines as they arrive; keep any partial tail buffered.
-    const consume = (chunk: string) => {
-      buffer += chunk;
-      let nl: number;
-      while ((nl = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, nl).trim();
-        buffer = buffer.slice(nl + 1);
-        if (!line) continue;
-        let ev: StreamEvent;
-        try {
-          ev = JSON.parse(line);
-        } catch {
-          continue; // ignore non-JSON noise
-        }
-        handleEvent(ev);
-      }
-    };
-
-    const handleEvent = (ev: StreamEvent) => {
-      if (ev.type === 'assistant') {
-        for (const c of ev.message?.content ?? []) {
-          if (c.type === 'tool_use') onEvent?.(toolUseToActivity(c));
-        }
-      } else if (ev.type === 'result') {
-        if (ev.is_error) {
-          resultError = new Error(
-            ev.api_error_status || ev.result || 'Claude reported an error'
-          );
-          return;
-        }
-        const m = ev.modelUsage ? Object.keys(ev.modelUsage)[0] ?? '' : '';
-        result = {
-          text: ev.result ?? '',
-          model: m,
-          outputTokens: ev.usage?.output_tokens ?? 0,
-          costUsd: ev.total_cost_usd ?? 0,
-        };
-      }
-    };
-
-    child.stdout.on('data', (d) => consume(d.toString()));
+    child.stdout.on('data', (d) => parser.consume(d.toString()));
     child.stderr.on('data', (d) => (stderr += d.toString()));
 
     child.on('error', (e) => {
@@ -478,79 +420,22 @@ function runClaude(
       if (settled) return;
       settled = true;
       cleanup();
-      if (buffer.trim()) consume('\n'); // flush a final unterminated line
-      if (resultError) {
-        reject(resultError);
+      parser.flush(); // drain a final unterminated line
+      if (parser.error) {
+        reject(parser.error);
         return;
       }
       if (code !== 0) {
         reject(new Error(stderr.trim() || `claude exited with code ${code}`));
         return;
       }
-      if (result) {
-        resolve(result);
+      if (parser.result) {
+        resolve(parser.result);
         return;
       }
       reject(new Error('Claude produced no result event'));
     });
   });
-}
-
-/** Minimal shape of the stream-json events we read (others are ignored). */
-interface StreamEvent {
-  type: string;
-  is_error?: boolean;
-  result?: string;
-  api_error_status?: string | null;
-  total_cost_usd?: number;
-  usage?: { output_tokens?: number };
-  modelUsage?: Record<string, unknown>;
-  message?: { content?: ToolUseContent[] };
-}
-interface ToolUseContent {
-  type: string;
-  name?: string;
-  input?: Record<string, unknown>;
-}
-
-/** Map a `tool_use` content block to a tree-friendly activity node. */
-function toolUseToActivity(c: ToolUseContent): ActivityNode {
-  const name = c.name ?? 'Tool';
-  const input = c.input ?? {};
-  const file = typeof input.file_path === 'string' ? input.file_path : '';
-  const cmd = typeof input.command === 'string' ? input.command : '';
-  const desc = typeof input.description === 'string' ? input.description : '';
-
-  // File-oriented tools: show the basename; commands: show the command itself.
-  switch (name) {
-    case 'Read':
-    case 'Edit':
-    case 'Write':
-    case 'NotebookEdit':
-      return {
-        label: `${name} ${baseName(file)}`,
-        icon: name === 'Read' ? 'go-to-file' : 'edit',
-        detail: file,
-      };
-    case 'Bash':
-      return { label: `Bash: ${oneLine(cmd)}`, icon: 'terminal', detail: cmd || desc };
-    case 'Grep':
-    case 'Glob':
-      return {
-        label: `${name}: ${oneLine(String(input.pattern ?? ''))}`,
-        icon: 'search',
-        detail: String(input.pattern ?? ''),
-      };
-    default:
-      return { label: name, icon: 'tools', detail: desc || JSON.stringify(input).slice(0, 200) };
-  }
-}
-
-/** Last path segment, for compact activity labels. */
-function baseName(p: string): string {
-  if (!p) return '';
-  const parts = p.split(/[\\/]/);
-  return parts[parts.length - 1] || p;
 }
 
 // ---------------------------------------------------------------------------
@@ -692,10 +577,4 @@ class CommentsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     };
     return item;
   }
-}
-
-/** Collapse a comment body to a single trimmed line for the tree label. */
-function oneLine(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > 60 ? `${flat.slice(0, 57)}…` : flat;
 }

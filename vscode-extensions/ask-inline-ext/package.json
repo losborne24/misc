@@ -133,6 +133,8 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
     "watch": "yarn build --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
