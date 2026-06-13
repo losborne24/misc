@@ -32,8 +32,8 @@
       },
       {
         "command": "askInline.deleteThread",
-        "title": "Delete thread",
-        "icon": "$(trash)"
+        "title": "Finished",
+        "icon": "$(check)"
       },
       {
         "command": "askInline.refreshThreads",

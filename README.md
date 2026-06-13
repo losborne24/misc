@@ -2,6 +2,9 @@
 
 Standalone tools and experiments that don't belong to a larger project.
 
+> ⚠️ Much of the code is AI-generated and lightly reviewed—treat as experimental
+> and review before running.
+
 ## Contents
 
 - [`vscode-extensions/ask-inline-ext`](vscode-extensions/ask-inline-ext) — VS Code

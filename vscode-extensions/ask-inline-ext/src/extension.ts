@@ -137,9 +137,11 @@ function disposeThread(thread?: vscode.CommentThread): void {
   tree?.refresh();
 }
 
-/** Open the thread's file and put the cursor on its line. */
+/** Open the thread's file, expand the thread, and put the cursor on its line. */
 async function revealThread(thread: vscode.CommentThread): Promise<void> {
   const range = thread.range ?? new vscode.Range(0, 0, 0, 0);
+  // Expand the thread so its comments show without a second click.
+  thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
   await vscode.window.showTextDocument(thread.uri, {
     selection: range,
     preview: false,
