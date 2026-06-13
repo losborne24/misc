@@ -64,6 +64,8 @@ class ReplyComment implements vscode.Comment {
 
 /** Single shared tree provider for the side-panel view. */
 let tree: CommentsTreeProvider;
+/** Handle to the view, used to set the activity-bar badge. */
+let treeView: vscode.TreeView<TreeNode>;
 
 /** A single streamed step in a run (one tool call, or the agent's thinking). */
 interface ActivityNode {
@@ -105,9 +107,13 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   tree = new CommentsTreeProvider();
-  context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('askInline.threads', tree)
-  );
+  // createTreeView (vs registerTreeDataProvider) gives us a handle to set the
+  // activity-bar badge with the live comment count.
+  treeView = vscode.window.createTreeView('askInline.threads', {
+    treeDataProvider: tree,
+  });
+  context.subscriptions.push(treeView);
+  tree.updateBadge();
 
   context.subscriptions.push(
     // Submit button on the comment reply box (new thread or existing thread).
@@ -587,7 +593,18 @@ class CommentsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         threadRegistry.delete(t);
         runState.delete(t);
       }
+    this.updateBadge();
     this._onDidChange.fire();
+  }
+
+  /** Set the activity-bar badge to the total comment count across live threads. */
+  updateBadge(): void {
+    if (!treeView) return;
+    let count = 0;
+    for (const t of threadRegistry) if (isAlive(t)) count += t.comments.length;
+    treeView.badge = count
+      ? { value: count, tooltip: `${count} comment${count === 1 ? '' : 's'}` }
+      : undefined;
   }
 
   getChildren(node?: TreeNode): TreeNode[] {
