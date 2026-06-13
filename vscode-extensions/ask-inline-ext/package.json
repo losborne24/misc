@@ -1,0 +1,145 @@
+{
+  "name": "ask-inline-ext",
+  "displayName": "Ask Inline",
+  "description": "Comment on any line to hand the task to the Claude Code CLI — it edits the code and replies inline.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "askInline.ask",
+        "title": "Ask Claude",
+        "icon": "$(send)"
+      },
+      {
+        "command": "askInline.replyToThread",
+        "title": "Ask Inline: Regenerate reply",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "askInline.deleteComment",
+        "title": "Delete comment",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "askInline.deleteThread",
+        "title": "Delete thread",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "askInline.refreshThreads",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "askInline",
+          "title": "Ask Inline",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "views": {
+      "askInline": [
+        {
+          "id": "askInline.threads",
+          "name": "Commented files",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "askInline.refreshThreads",
+          "when": "view == askInline.threads",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "askInline.deleteThread",
+          "when": "view == askInline.threads && viewItem == askInlineThreadNode",
+          "group": "inline"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "askInline.replyToThread",
+          "group": "inline@1"
+        },
+        {
+          "command": "askInline.deleteThread",
+          "group": "inline@2"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "askInline.ask",
+          "group": "inline"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "askInline.deleteComment",
+          "group": "inline",
+          "when": "comment == askInlineComment"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Ask Inline",
+      "properties": {
+        "askInline.claudeBin": {
+          "type": "string",
+          "default": "claude",
+          "description": "Path to the Claude Code CLI binary."
+        },
+        "askInline.model": {
+          "type": "string",
+          "default": "",
+          "description": "Optional model id passed to `claude --model`. Empty = CLI default."
+        },
+        "askInline.systemPrompt": {
+          "type": "string",
+          "default": "You act on code review comments as tasks. Make the requested code change when one is called for, then reply with a short, technical summary of what you did. No greetings or sign-offs.",
+          "description": "System/append prompt sent to Claude before the thread."
+        },
+        "askInline.permissionMode": {
+          "type": "string",
+          "default": "bypassPermissions",
+          "enum": ["default", "acceptEdits", "dontAsk", "bypassPermissions", "plan"],
+          "markdownDescription": "Passed to `claude --permission-mode`. `bypassPermissions` (default) allows **all** tools incl. Bash with no prompts — needed for tasks that run commands, but it executes anything the model decides. `acceptEdits` allows file edits only (Bash denied). `plan` answers without changing code."
+        },
+        "askInline.timeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "description": "Max time to wait for the Claude CLI subprocess. Agentic runs that edit code take longer than plain replies."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18",
+    "watch": "yarn build --watch",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0"
+  }
+}
