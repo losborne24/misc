@@ -37,6 +37,18 @@ function cancelRun(thread: vscode.CommentThread): void {
   runningRuns.get(thread)?.cancel();
 }
 
+/**
+ * Live activity for each thread's run: the agent runs as an opaque subprocess,
+ * so we parse its streamed events and surface each tool call as a child node in
+ * the side-panel tree. `running` drives the spinner icon; `activity` persists
+ * after the run so the trace stays reviewable.
+ */
+interface ThreadRun {
+  running: boolean;
+  activity: ActivityNode[];
+}
+const runState = new Map<vscode.CommentThread, ThreadRun>();
+
 /** A comment we control. Carries `id` + `parent` so it can be deleted later. */
 class ReplyComment implements vscode.Comment {
   mode = vscode.CommentMode.Preview;
@@ -52,6 +64,30 @@ class ReplyComment implements vscode.Comment {
 
 /** Single shared tree provider for the side-panel view. */
 let tree: CommentsTreeProvider;
+
+/** A single streamed step in a run (one tool call, or the agent's thinking). */
+interface ActivityNode {
+  /** One-line label, e.g. "Edit foo.ts" or "Bash: npm test". */
+  label: string;
+  /** Codicon id for the leaf, chosen by tool. */
+  icon: string;
+  /** Longer detail for the tooltip (full path, full command). */
+  detail?: string;
+}
+
+/**
+ * Coalesce tree refreshes: streamed events can arrive in bursts, and firing the
+ * tree's change event per event thrashes the view. Batch to one refresh per tick.
+ */
+let refreshQueued = false;
+function scheduleRefresh(): void {
+  if (refreshQueued) return;
+  refreshQueued = true;
+  setTimeout(() => {
+    refreshQueued = false;
+    tree?.refresh();
+  }, 80);
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   const controller = vscode.comments.createCommentController(
@@ -148,6 +184,7 @@ function disposeThread(thread?: vscode.CommentThread): void {
   if (!thread) return;
   cancelRun(thread); // kill any in-flight Claude run before the thread goes away
   threadRegistry.delete(thread);
+  runState.delete(thread);
   thread.dispose();
   tree?.refresh();
 }
@@ -194,13 +231,27 @@ async function generate(thread: vscode.CommentThread): Promise<void> {
       title: 'Ask Inline: Claude is working…',
       cancellable: true,
     },
-    async (_progress, token) => {
+    async (progress, token) => {
       // Cancel either via the notification's button or when the thread/comment
       // is deleted (deleteComment/disposeThread call cancelRun).
       const source = new vscode.CancellationTokenSource();
       token.onCancellationRequested(() => source.cancel());
       runningRuns.get(thread)?.cancel(); // supersede any prior run on this thread
       runningRuns.set(thread, source);
+
+      // Fresh activity log for this run; the tree renders it under the thread.
+      const run: ThreadRun = { running: true, activity: [] };
+      runState.set(thread, run);
+      tree?.refresh();
+
+      // Each streamed tool call becomes a tree child and the notification's
+      // current-action line. Coalesced refreshes keep the tree from thrashing.
+      const onEvent = (ev: ActivityNode) => {
+        if (runState.get(thread) !== run) return; // superseded by a newer run
+        run.activity.push(ev);
+        progress.report({ message: ev.label });
+        scheduleRefresh();
+      };
 
       let author = REPLY_AUTHOR;
       let body: vscode.MarkdownString;
@@ -209,7 +260,8 @@ async function generate(thread: vscode.CommentThread): Promise<void> {
         const { text, model, outputTokens, costUsd } = await runClaude(
           prompt,
           source.token,
-          thread.uri
+          thread.uri,
+          onEvent
         );
         // Name the actual model the CLI resolved to (not the config string).
         author = { name: model ? `Claude (${model})` : 'Claude' };
@@ -219,12 +271,19 @@ async function generate(thread: vscode.CommentThread): Promise<void> {
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (msg === 'cancelled') return; // nothing posted on cancel
+        if (msg === 'cancelled') {
+          // Drop the partial activity log; nothing is posted on cancel.
+          if (runState.get(thread) === run) runState.delete(thread);
+          tree?.refresh();
+          return;
+        }
         body = new vscode.MarkdownString(`⚠️ ${msg}`);
       } finally {
         // Only clear if we're still the active run (a newer run may have replaced us).
         if (runningRuns.get(thread) === source) runningRuns.delete(thread);
         source.dispose();
+        run.running = false; // stop the spinner; keep the trace for review
+        tree?.refresh();
       }
       setComments(thread, [
         ...thread.comments,
@@ -289,11 +348,16 @@ interface ClaudeResult {
   costUsd: number;
 }
 
-/** Spawn `claude -p <prompt> --output-format json` and parse its result. */
+/**
+ * Spawn `claude -p <prompt> --output-format stream-json` and parse its NDJSON
+ * event stream. `onEvent` fires once per agent tool call so callers can render
+ * live activity; the final `result` event yields the reply + usage.
+ */
 function runClaude(
   prompt: string,
   token: vscode.CancellationToken,
-  fileUri?: vscode.Uri
+  fileUri?: vscode.Uri,
+  onEvent?: (ev: ActivityNode) => void
 ): Promise<ClaudeResult> {
   const cfg = vscode.workspace.getConfiguration('askInline');
   const bin = cfg.get<string>('claudeBin', 'claude');
@@ -303,7 +367,15 @@ function runClaude(
 
   const permissionMode = cfg.get<string>('permissionMode', 'bypassPermissions');
 
-  const args = ['-p', prompt, '--output-format', 'json'];
+  // stream-json emits one JSON object per line as the run progresses; --verbose
+  // is required for it to include the intermediate assistant/tool_use events.
+  const args = [
+    '-p',
+    prompt,
+    '--output-format',
+    'stream-json',
+    '--verbose',
+  ];
   if (model) args.push('--model', model);
   if (systemPrompt) args.push('--append-system-prompt', systemPrompt);
   if (permissionMode) args.push('--permission-mode', permissionMode);
@@ -317,8 +389,10 @@ function runClaude(
   return new Promise<ClaudeResult>((resolve, reject) => {
     const child = spawn(bin, args, { cwd, shell: false });
 
-    let stdout = '';
+    let buffer = ''; // holds an incomplete trailing line between data chunks
     let stderr = '';
+    let result: ClaudeResult | undefined; // set when the final `result` event lands
+    let resultError: Error | undefined;
     let settled = false;
 
     const cleanup = () => {
@@ -340,7 +414,47 @@ function runClaude(
       reject(new Error('cancelled'));
     });
 
-    child.stdout.on('data', (d) => (stdout += d.toString()));
+    // Parse complete NDJSON lines as they arrive; keep any partial tail buffered.
+    const consume = (chunk: string) => {
+      buffer += chunk;
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        let ev: StreamEvent;
+        try {
+          ev = JSON.parse(line);
+        } catch {
+          continue; // ignore non-JSON noise
+        }
+        handleEvent(ev);
+      }
+    };
+
+    const handleEvent = (ev: StreamEvent) => {
+      if (ev.type === 'assistant') {
+        for (const c of ev.message?.content ?? []) {
+          if (c.type === 'tool_use') onEvent?.(toolUseToActivity(c));
+        }
+      } else if (ev.type === 'result') {
+        if (ev.is_error) {
+          resultError = new Error(
+            ev.api_error_status || ev.result || 'Claude reported an error'
+          );
+          return;
+        }
+        const m = ev.modelUsage ? Object.keys(ev.modelUsage)[0] ?? '' : '';
+        result = {
+          text: ev.result ?? '',
+          model: m,
+          outputTokens: ev.usage?.output_tokens ?? 0,
+          costUsd: ev.total_cost_usd ?? 0,
+        };
+      }
+    };
+
+    child.stdout.on('data', (d) => consume(d.toString()));
     child.stderr.on('data', (d) => (stderr += d.toString()));
 
     child.on('error', (e) => {
@@ -358,51 +472,79 @@ function runClaude(
       if (settled) return;
       settled = true;
       cleanup();
+      if (buffer.trim()) consume('\n'); // flush a final unterminated line
+      if (resultError) {
+        reject(resultError);
+        return;
+      }
       if (code !== 0) {
         reject(new Error(stderr.trim() || `claude exited with code ${code}`));
         return;
       }
-      try {
-        resolve(parseClaudeJson(stdout));
-      } catch (e) {
-        reject(e);
+      if (result) {
+        resolve(result);
+        return;
       }
+      reject(new Error('Claude produced no result event'));
     });
   });
 }
 
-/**
- * Pull the reply text and resolved model id out of `--output-format json`.
- * Throws on a CLI-reported error (exit 0 but `is_error: true`).
- */
-function parseClaudeJson(stdout: string): ClaudeResult {
-  let json: {
-    result?: string;
-    is_error?: boolean;
-    api_error_status?: string | null;
-    total_cost_usd?: number;
-    usage?: { output_tokens?: number };
-    modelUsage?: Record<string, unknown>;
-  };
-  try {
-    json = JSON.parse(stdout);
-  } catch {
-    // Fall back to raw stdout if the CLI didn't emit JSON.
-    return { text: stdout, model: '', outputTokens: 0, costUsd: 0 };
+/** Minimal shape of the stream-json events we read (others are ignored). */
+interface StreamEvent {
+  type: string;
+  is_error?: boolean;
+  result?: string;
+  api_error_status?: string | null;
+  total_cost_usd?: number;
+  usage?: { output_tokens?: number };
+  modelUsage?: Record<string, unknown>;
+  message?: { content?: ToolUseContent[] };
+}
+interface ToolUseContent {
+  type: string;
+  name?: string;
+  input?: Record<string, unknown>;
+}
+
+/** Map a `tool_use` content block to a tree-friendly activity node. */
+function toolUseToActivity(c: ToolUseContent): ActivityNode {
+  const name = c.name ?? 'Tool';
+  const input = c.input ?? {};
+  const file = typeof input.file_path === 'string' ? input.file_path : '';
+  const cmd = typeof input.command === 'string' ? input.command : '';
+  const desc = typeof input.description === 'string' ? input.description : '';
+
+  // File-oriented tools: show the basename; commands: show the command itself.
+  switch (name) {
+    case 'Read':
+    case 'Edit':
+    case 'Write':
+    case 'NotebookEdit':
+      return {
+        label: `${name} ${baseName(file)}`,
+        icon: name === 'Read' ? 'go-to-file' : 'edit',
+        detail: file,
+      };
+    case 'Bash':
+      return { label: `Bash: ${oneLine(cmd)}`, icon: 'terminal', detail: cmd || desc };
+    case 'Grep':
+    case 'Glob':
+      return {
+        label: `${name}: ${oneLine(String(input.pattern ?? ''))}`,
+        icon: 'search',
+        detail: String(input.pattern ?? ''),
+      };
+    default:
+      return { label: name, icon: 'tools', detail: desc || JSON.stringify(input).slice(0, 200) };
   }
-  if (json.is_error) {
-    throw new Error(
-      json.api_error_status || json.result || 'Claude reported an error'
-    );
-  }
-  // `modelUsage` is keyed by the actual resolved model id; take the first key.
-  const model = json.modelUsage ? Object.keys(json.modelUsage)[0] ?? '' : '';
-  return {
-    text: json.result ?? '',
-    model,
-    outputTokens: json.usage?.output_tokens ?? 0,
-    costUsd: json.total_cost_usd ?? 0,
-  };
+}
+
+/** Last path segment, for compact activity labels. */
+function baseName(p: string): string {
+  if (!p) return '';
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] || p;
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +560,7 @@ function isAlive(thread: vscode.CommentThread): boolean {
   }
 }
 
-type TreeNode = FileNode | vscode.CommentThread;
+type TreeNode = FileNode | vscode.CommentThread | ActivityLeaf;
 
 /** A file grouping node, holding the threads that live in it. */
 class FileNode {
@@ -428,21 +570,33 @@ class FileNode {
   ) {}
 }
 
+/** A streamed activity step shown as a child under a running/finished thread. */
+class ActivityLeaf {
+  constructor(public readonly event: ActivityNode) {}
+}
+
 /** Lists files that have comment threads, expandable to the threads themselves. */
 class CommentsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChange.event;
 
   refresh(): void {
-    // Prune dead threads before re-rendering.
-    for (const t of threadRegistry) if (!isAlive(t)) threadRegistry.delete(t);
+    // Prune dead threads (and their run state) before re-rendering.
+    for (const t of threadRegistry)
+      if (!isAlive(t)) {
+        threadRegistry.delete(t);
+        runState.delete(t);
+      }
     this._onDidChange.fire();
   }
 
   getChildren(node?: TreeNode): TreeNode[] {
     if (!node) return this.fileNodes();
     if (node instanceof FileNode) return node.threads;
-    return []; // thread node is a leaf
+    if (node instanceof ActivityLeaf) return []; // activity is a leaf
+    // Thread node: children are its run's activity steps, if any.
+    const run = runState.get(node);
+    return run ? run.activity.map((e) => new ActivityLeaf(e)) : [];
   }
 
   /** Group live threads by file, sorted by path then by line. */
@@ -466,6 +620,16 @@ class CommentsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   }
 
   getTreeItem(node: TreeNode): vscode.TreeItem {
+    if (node instanceof ActivityLeaf) {
+      const item = new vscode.TreeItem(
+        node.event.label,
+        vscode.TreeItemCollapsibleState.None
+      );
+      item.iconPath = new vscode.ThemeIcon(node.event.icon);
+      item.tooltip = node.event.detail ?? node.event.label;
+      return item;
+    }
+
     if (node instanceof FileNode) {
       const item = new vscode.TreeItem(
         vscode.workspace.asRelativePath(node.uri),
@@ -487,11 +651,20 @@ class CommentsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         : first.body.value
       : '';
     const label = formatRange(node.range);
+    const run = runState.get(node);
+    // Expand the run's activity when present; auto-expand while it's live.
+    const collapsible = run?.activity.length
+      ? run.running
+        ? vscode.TreeItemCollapsibleState.Expanded
+        : vscode.TreeItemCollapsibleState.Collapsed
+      : vscode.TreeItemCollapsibleState.None;
     const item = new vscode.TreeItem(
       `${label.charAt(0).toUpperCase()}${label.slice(1)}: ${oneLine(body)}`,
-      vscode.TreeItemCollapsibleState.None
+      collapsible
     );
-    item.iconPath = new vscode.ThemeIcon('comment');
+    // Spinner while running, comment glyph otherwise.
+    item.iconPath = new vscode.ThemeIcon(run?.running ? 'loading~spin' : 'comment');
+    if (run?.running) item.description = 'running…';
     item.tooltip = body;
     // Lets the tree's right-click / inline menu target thread nodes.
     item.contextValue = 'askInlineThreadNode';

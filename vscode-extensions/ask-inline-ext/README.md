@@ -39,21 +39,23 @@ Ask Inline keeps the agent **anchored to the code**:
 ```
 1. select line(s), "+"    →  start a comment thread on that line or range
 2. type comment + submit  →  echo "You: …" into the thread
-3. claude -p "<thread>"    →  subprocess acts on the task (may edit files);
-                              a cancellable "Claude is working…" notification shows
+3. claude (stream-json)   →  subprocess acts on the task (may edit files); each
+                              tool call streams live under the thread in the panel
 4. post reply             →  "Claude (<model>): <summary>" appended to the thread
 5. reply again in-thread  →  re-sends full transcript, loops to step 3
 ```
 
 Design notes:
 
-- Each `claude -p` run is **stateless** — the whole thread transcript is the
-  prompt, so follow-ups carry prior context. The system prompt frames the latest
-  comment as a task to carry out, not just answer.
+- Each run is **stateless** — the whole thread transcript is the prompt, so
+  follow-ups carry prior context. The system prompt frames the latest comment as
+  a task to carry out, not just answer.
 - Runs under `--permission-mode bypassPermissions` so Claude can edit files and
   run commands without prompts. Lower it via `askInline.permissionMode`.
-- Progress is a cancellable notification, not an in-thread placeholder. Cancel
-  posts nothing; success appends the reply.
+- The CLI runs with `--output-format stream-json`, so the extension can show
+  **live activity**: each file read/edit and command appears as a child node
+  under the thread in the side panel (with a spinner while running), and the
+  current action shows in the cancellable progress notification.
 - The **Ask Inline** activity-bar view lists files with threads (the Comments API
   can't enumerate threads, so we track ours in a registry and prune dead ones).
 
@@ -64,8 +66,9 @@ Design notes:
    generated `ask-inline-ext-*.vsix`, then reload the window.
 3. Select one or more lines, then click the gutter **"+"** to start a comment
    thread on that line or range.
-4. Type a task and click **Ask Claude** (the send icon). A *Claude is working…*
-   notification appears (cancellable); the reply is appended when it finishes.
+4. Type a task and click **Ask Claude** (the send icon). A cancellable
+   notification shows the current action, and each tool call streams live under
+   the thread in the **Ask Inline** panel; the reply is appended when it finishes.
 5. Use the title-bar **comment icon** to regenerate a reply on an existing thread.
 6. Remove a comment with its **trash** icon, or close the whole thread with the
    **Finished** (✓) icon in the thread title bar.
@@ -82,10 +85,9 @@ Design notes:
 
 ## Limits
 
-- **No visibility into what the agent is doing mid-run.** The CLI runs as an
-  opaque subprocess — you see only a "working…" notification, then the final
-  summary. There's no live stream of the files it reads, edits it makes, or
-  commands it runs; you review the result after the fact (e.g. via the diff).
+- Live activity shows **which** tools the agent runs (file reads/edits, commands),
+  not their full output or the reasoning between them — review the diff after a
+  run for the actual changes.
 - Comments post under our own comment controller, so they live in-editor but are
   **not** persisted or synced to GitHub. They vanish when the window reloads. For
   GitHub PR sync you'd call `gh api` against the PR review comment endpoint.
