@@ -1,3 +1,6 @@
+> ⚠️ This extension is entirely vibe-coded — written by AI and lightly reviewed.
+> Treat it as experimental and review before running.
+
 # Ask Inline (VS Code extension)
 
 Add a **comment to any line** of any file (VS Code Comments API). The comment is

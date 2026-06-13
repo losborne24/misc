@@ -25,6 +25,18 @@ let nextCommentId = 1;
  */
 const threadRegistry = new Set<vscode.CommentThread>();
 
+/**
+ * In-flight Claude runs, keyed by the thread they post into. Lets us cancel the
+ * subprocess when the thread/comment is deleted mid-run (not only via the
+ * progress notification's Cancel button).
+ */
+const runningRuns = new Map<vscode.CommentThread, vscode.CancellationTokenSource>();
+
+/** Cancel an in-flight run for a thread, if one exists. */
+function cancelRun(thread: vscode.CommentThread): void {
+  runningRuns.get(thread)?.cancel();
+}
+
 /** A comment we control. Carries `id` + `parent` so it can be deleted later. */
 class ReplyComment implements vscode.Comment {
   mode = vscode.CommentMode.Preview;
@@ -122,16 +134,19 @@ async function ask(reply: vscode.CommentReply): Promise<void> {
 function deleteComment(comment?: ReplyComment): void {
   const thread = comment?.parent;
   if (!thread) return;
-  setComments(
-    thread,
-    thread.comments.filter((c) => (c as ReplyComment).id !== comment.id)
+  const remaining = thread.comments.filter(
+    (c) => (c as ReplyComment).id !== comment.id
   );
+  // Emptying the thread implicitly ends it — cancel any run posting into it.
+  if (remaining.length === 0) cancelRun(thread);
+  setComments(thread, remaining);
   tree?.refresh();
 }
 
 /** Dispose a thread and drop it from the registry. */
 function disposeThread(thread?: vscode.CommentThread): void {
   if (!thread) return;
+  cancelRun(thread); // kill any in-flight Claude run before the thread goes away
   threadRegistry.delete(thread);
   thread.dispose();
   tree?.refresh();
@@ -180,13 +195,20 @@ async function generate(thread: vscode.CommentThread): Promise<void> {
       cancellable: true,
     },
     async (_progress, token) => {
+      // Cancel either via the notification's button or when the thread/comment
+      // is deleted (deleteComment/disposeThread call cancelRun).
+      const source = new vscode.CancellationTokenSource();
+      token.onCancellationRequested(() => source.cancel());
+      runningRuns.get(thread)?.cancel(); // supersede any prior run on this thread
+      runningRuns.set(thread, source);
+
       let author = REPLY_AUTHOR;
       let body: vscode.MarkdownString;
       try {
         const prompt = buildPrompt(thread);
         const { text, model, outputTokens, costUsd } = await runClaude(
           prompt,
-          token,
+          source.token,
           thread.uri
         );
         // Name the actual model the CLI resolved to (not the config string).
@@ -199,6 +221,10 @@ async function generate(thread: vscode.CommentThread): Promise<void> {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg === 'cancelled') return; // nothing posted on cancel
         body = new vscode.MarkdownString(`⚠️ ${msg}`);
+      } finally {
+        // Only clear if we're still the active run (a newer run may have replaced us).
+        if (runningRuns.get(thread) === source) runningRuns.delete(thread);
+        source.dispose();
       }
       setComments(thread, [
         ...thread.comments,
