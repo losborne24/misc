@@ -244,11 +244,19 @@ function usageFooter(outputTokens: number, costUsd: number): string {
   return `\n\n---\n_${parts.join(' · ')}_`;
 }
 
+/** Human label for a thread's anchor: "line 5" or "lines 5–9" (1-based). */
+function formatRange(range?: vscode.Range): string {
+  if (!range) return 'an unknown location';
+  const start = range.start.line + 1;
+  const end = range.end.line + 1;
+  return start === end ? `line ${start}` : `lines ${start}–${end}`;
+}
+
 /** Serialize a thread into a plain-text transcript for the model. */
 function buildPrompt(thread: vscode.CommentThread): string {
   // Absolute path so Claude resolves the file regardless of its cwd.
   const file = thread.uri.fsPath;
-  const line = thread.range ? thread.range.start.line + 1 : '?';
+  const location = formatRange(thread.range);
 
   const transcript = thread.comments
     .map((c) => {
@@ -259,7 +267,7 @@ function buildPrompt(thread: vscode.CommentThread): string {
     .join('\n\n');
 
   return [
-    `You are working on ${file}, around line ${line}.`,
+    `You are working on ${file}, around ${location}.`,
     'A developer left this comment thread on that location:',
     '',
     transcript,
@@ -471,16 +479,16 @@ class CommentsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       return item;
     }
 
-    // Thread leaf: show line number + first comment as a one-line preview.
-    const line = node.range ? node.range.start.line + 1 : 0;
+    // Thread leaf: show line/range + first comment as a one-line preview.
     const first = node.comments[0];
     const body = first
       ? typeof first.body === 'string'
         ? first.body
         : first.body.value
       : '';
+    const label = formatRange(node.range);
     const item = new vscode.TreeItem(
-      `Line ${line}: ${oneLine(body)}`,
+      `${label.charAt(0).toUpperCase()}${label.slice(1)}: ${oneLine(body)}`,
       vscode.TreeItemCollapsibleState.None
     );
     item.iconPath = new vscode.ThemeIcon('comment');
