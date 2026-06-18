@@ -8,6 +8,7 @@ import com.intellij.openapi.editor.Inlay
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.impl.EditorEmbeddedComponentManager
 import com.intellij.openapi.editor.impl.EditorImpl
+import com.intellij.ui.AnimatedIcon
 import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
@@ -20,10 +21,14 @@ import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
 import org.intellij.markdown.html.HtmlGenerator
 import org.intellij.markdown.parser.MarkdownParser
 import java.awt.BorderLayout
+import java.awt.Color
 import java.awt.Component
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.Graphics
+import java.awt.Graphics2D
+import java.awt.RenderingHints
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import javax.swing.BorderFactory
@@ -55,6 +60,12 @@ class InlineThreadView(
     private var inlay: Inlay<*>? = null
     var collapsed = false
         private set
+
+    // GitHub-ish card palette, theme-aware (light / dark).
+    private val cardBg = JBColor(Color(0xFFFFFF), Color(0x2B2D30))
+    private val cardBorder = JBColor(Color(0xD0D7DE), Color(0x4E5157))
+    private val headerBg = JBColor(Color(0xF6F8FA), Color(0x323438))
+    private val claudeHeaderBg = JBColor(Color(0xEAF1FB), Color(0x2E3A4A))
 
     init {
         buildCard()
@@ -188,15 +199,45 @@ class InlineThreadView(
             }, BorderLayout.EAST)
         }
 
+        // Live-activity row: spinner + current tool action while Claude runs.
+        statusLabel = JBLabel("", AnimatedIcon.Default(), JBLabel.LEFT).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(2, 4)
+        }
+        statusRow = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, statusLabel.preferredSize.height + JBUI.scale(4))
+            isVisible = false
+            add(statusLabel, BorderLayout.WEST)
+        }
+
         val center = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
             add(header)
             add(Box.createVerticalStrut(4))
             add(transcript)
+            add(statusRow)
             add(replyRow)
         }
         root.add(center, BorderLayout.CENTER)
+    }
+
+    private lateinit var statusRow: JComponent
+    private lateinit var statusLabel: JBLabel
+
+    /** Show the current agent action (e.g. "Edit Foo.kt") with a spinner. */
+    fun setActivity(label: String) {
+        statusLabel.text = label
+        statusRow.isVisible = true
+        updateInlayHeight()
+    }
+
+    /** Hide the activity row (run finished or cancelled). */
+    fun clearActivity() {
+        statusRow.isVisible = false
+        updateInlayHeight()
     }
 
     private fun submit() {
@@ -216,45 +257,81 @@ class InlineThreadView(
         transcript.removeAll()
         for (c in state.comments) {
             transcript.add(commentRow(c))
-            transcript.add(Box.createVerticalStrut(6))
+            transcript.add(Box.createVerticalStrut(8))
         }
         transcript.revalidate()
         transcript.repaint()
     }
 
+    /**
+     * One comment rendered as a GitHub-style card: a rounded panel with a
+     * header strip (author + role tint) over a body. Consistent 12px padding,
+     * 1px subtle border, IDE typography.
+     */
     private fun commentRow(c: CommentEntry): JComponent {
         val isClaude = c.author.startsWith("Claude")
-        val author = JBLabel("<html><b>${escape(c.author)}</b></html>").apply {
+
+        // Header strip: author name, semibold, in a tinted bar (GitHub puts the
+        // author on its own line above the body). Claude rows get a faint accent
+        // tint to distinguish reply from prompt.
+        val author = JBLabel(escape(c.author)).apply {
+            font = font.deriveFont(java.awt.Font.BOLD, font.size2D)
             alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(8, 12, 8, 12)
         }
-        // Render Claude's markdown as HTML, styled with the IDE UI font + CSS so
-        // it reads like a GitHub comment, not raw terminal text. The default
-        // JEditorPane kit uses a serif font with no styling — the "terminal look".
+        val headerStrip = JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = if (isClaude) claudeHeaderBg else headerBg
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, author.preferredSize.height + JBUI.scale(16))
+            add(author, BorderLayout.WEST)
+        }
+
+        // Body: GFM HTML, IDE font, 12px padding.
         val body = JEditorPane().apply {
             editorKit = HTMLEditorKitBuilder().build()
             isEditable = false
             isOpaque = false
-            border = JBUI.Borders.emptyLeft(8)
+            border = JBUI.Borders.empty(8, 12, 10, 12)
             cursor = Cursor.getPredefinedCursor(Cursor.DEFAULT_CURSOR)
             alignmentX = Component.LEFT_ALIGNMENT
-            // Let the HTML pane fill the row width; otherwise BoxLayout caps it at
-            // its preferred size and text wraps at ~half the card.
             maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
             text = markdownToHtml(c.body)
         }
-        return JPanel().apply {
+
+        val content = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = true
-            background = if (isClaude) JBColor.namedColor("EditorPane.background", JBColor.background())
-            else JBColor.namedColor("TextField.background", JBColor.background())
-            border = JBUI.Borders.empty(4)
+            isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
-            // Under BoxLayout a panel won't stretch past its preferred width
-            // unless maximumSize allows it — without this the row fills only
-            // half the card. Let width grow to the card; keep height tight.
-            maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
-            add(author)
+            add(headerStrip)
             add(body)
+        }
+
+        // Rounded, bordered card wrapping header + body.
+        return RoundedPanel(cardBg, cardBorder).apply {
+            layout = BorderLayout()
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
+            add(content, BorderLayout.CENTER)
+        }
+    }
+
+    /** A panel that paints a rounded, filled, 1px-bordered rectangle. */
+    private class RoundedPanel(
+        private val fill: Color,
+        private val line: Color,
+        private val arc: Int = JBUI.scale(8),
+    ) : JPanel() {
+        init { isOpaque = false }
+        override fun paintComponent(g: Graphics) {
+            val g2 = g.create() as Graphics2D
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g2.color = fill
+            g2.fillRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.color = line
+            g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            g2.dispose()
+            super.paintComponent(g)
         }
     }
 

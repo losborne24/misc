@@ -91,6 +91,8 @@ class ThreadController(private val project: Project) {
         onChange()
         toolWindowRefresh()
 
+        val rt = runtimeFor(editor, state)
+
         ProgressManager.getInstance().run(object :
             Task.Backgroundable(project, "Ask Inline: Claude is working...", true) {
 
@@ -100,6 +102,11 @@ class ThreadController(private val project: Project) {
                 try {
                     val result = runner.run(prompt, workDir, indicator) { ev ->
                         indicator.text = ev.label
+                        // Record for the tool window + surface live in the card.
+                        rt?.activity?.add(ev)
+                        ApplicationManager.getApplication().invokeLater {
+                            rt?.view?.setActivity(ev.label)
+                        }
                         toolWindowRefresh()
                     }
                     val author = if (result.model.isNotEmpty()) "Claude (${result.model})" else "Claude"
@@ -117,7 +124,10 @@ class ThreadController(private val project: Project) {
                     val registry = ThreadRegistry.getInstance(project)
                     AskInlineEditorListener.syncRangesToState(editor, registry)
                     // Refresh the inline card on the EDT.
-                    ApplicationManager.getApplication().invokeLater { onChange() }
+                    ApplicationManager.getApplication().invokeLater {
+                        rt?.view?.clearActivity()
+                        onChange()
+                    }
                     toolWindowRefresh()
                 }
             }
