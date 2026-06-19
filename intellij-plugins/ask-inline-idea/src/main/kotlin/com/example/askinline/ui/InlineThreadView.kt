@@ -214,7 +214,6 @@ class InlineThreadView(
         val ask = JButton("Ask Claude").apply {
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         }
-        val plus = iconButton(AllIcons.General.Add, "Add comment") { submit() }
         ask.addActionListener { submit() }
         input.cursor = Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR)
         // Focus highlight: accent border when typing, subtle border otherwise.
@@ -231,7 +230,7 @@ class InlineThreadView(
             add(input, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0)).apply {
                 isOpaque = false
-                add(plus); add(ask)
+                add(ask)
             }, BorderLayout.EAST)
         }
 

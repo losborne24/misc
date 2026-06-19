@@ -73,6 +73,8 @@ class ThreadController(private val project: Project) {
 
         val registry = ThreadRegistry.getInstance(project)
         registry.forEditor(editor).firstOrNull { it.state.id == state.id }?.let { rt ->
+            // End any in-flight Claude run for this thread.
+            rt.indicator?.cancel()
             if (rt.highlighter.isValid) editor.markupModel.removeHighlighter(rt.highlighter)
             rt.view?.dispose()
             registry.remove(editor, rt)
@@ -99,6 +101,7 @@ class ThreadController(private val project: Project) {
             override fun run(indicator: ProgressIndicator) {
                 val workDir = project.basePath ?: return
                 val prompt = buildPrompt(state)
+                rt?.indicator = indicator
                 try {
                     val result = runner.run(prompt, workDir, indicator) { ev ->
                         indicator.text = ev.label
@@ -120,6 +123,7 @@ class ThreadController(private val project: Project) {
                         author = "Claude"; body = "[error] ${e.message}"
                     })
                 } finally {
+                    rt?.indicator = null
                     // Persist any anchor drift caused by edits during the run.
                     val registry = ThreadRegistry.getInstance(project)
                     AskInlineEditorListener.syncRangesToState(editor, registry)
