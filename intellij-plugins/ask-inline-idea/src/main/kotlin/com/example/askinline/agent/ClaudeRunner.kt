@@ -44,9 +44,15 @@ class ClaudeRunner(private val settings: AskInlineSettings = AskInlineSettings.g
 
         val parser = StreamParser(onEvent)
         val stderr = StringBuilder()
+        // Idle timeout: timeoutMs is the max time with NO output, not a wall-clock
+        // cap. Agentic runs (research -> build -> validate) stay alive as long as
+        // they keep streaming events; only a genuinely hung process is killed.
+        // AtomicLong because onTextAvailable fires on a different thread.
+        val lastActivity = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
 
         handler.addProcessListener(object : ProcessAdapter() {
             override fun onTextAvailable(e: ProcessEvent, type: Key<*>) {
+                lastActivity.set(System.currentTimeMillis())
                 when (type) {
                     ProcessOutputTypes.STDOUT -> parser.consume(e.text)
                     ProcessOutputTypes.STDERR -> stderr.append(e.text)
@@ -56,15 +62,17 @@ class ClaudeRunner(private val settings: AskInlineSettings = AskInlineSettings.g
 
         handler.startNotify()
 
-        val deadline = System.currentTimeMillis() + settings.timeoutMs
         while (!handler.waitFor(100)) {
             if (indicator.isCanceled) {
                 handler.destroyProcess()
                 throw RunCancelledException()
             }
-            if (System.currentTimeMillis() > deadline) {
+            val idle = System.currentTimeMillis() - lastActivity.get()
+            if (idle > settings.timeoutMs) {
                 handler.destroyProcess()
-                throw RuntimeException("Claude CLI timed out after ${settings.timeoutMs}ms")
+                throw RuntimeException(
+                    "Claude CLI produced no output for ${settings.timeoutMs}ms (idle timeout)"
+                )
             }
         }
 

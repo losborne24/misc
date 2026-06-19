@@ -30,7 +30,8 @@ class AskInlineConfigurable : Configurable {
         row("Claude binary:") { cell(claudeBin) }
         row("Model (blank = CLI default):") { cell(model) }
         row("Permission mode:") { cell(permissionMode) }
-        row("Timeout (ms):") { cell(timeoutMs) }
+        row("Idle timeout (ms):") { cell(timeoutMs) }
+            .comment("Max time with no CLI output before the run is killed (not a total cap).")
         row("System prompt:") { cell(systemPrompt) }
     }
 
@@ -46,7 +47,7 @@ class AskInlineConfigurable : Configurable {
         data.model = model.text.trim()
         data.systemPrompt = systemPrompt.text
         data.permissionMode = permissionMode.selectedItem as String
-        data.timeoutMs = timeoutMs.text.toIntOrNull() ?: 300_000
+        data.timeoutMs = timeoutMs.text.toIntOrNull() ?: 120_000
     }
 
     override fun reset() {

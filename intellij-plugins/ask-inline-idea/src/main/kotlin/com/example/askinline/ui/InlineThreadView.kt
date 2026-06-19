@@ -31,6 +31,8 @@ import java.awt.Graphics2D
 import java.awt.RenderingHints
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
+import java.awt.event.KeyEvent
+import javax.swing.AbstractAction
 import javax.swing.BorderFactory
 import javax.swing.Box
 import javax.swing.BoxLayout
@@ -38,6 +40,7 @@ import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JEditorPane
 import javax.swing.JPanel
+import javax.swing.KeyStroke
 
 /**
  * The inline comment card: a real Swing component embedded as a block inlay
@@ -188,6 +191,7 @@ class InlineThreadView(
         val plus = iconButton(AllIcons.General.Add, "Add comment") { submit() }
         ask.addActionListener { submit() }
         input.cursor = Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR)
+        bindInputKeys()
         replyRow = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.emptyTop(4)
@@ -250,6 +254,32 @@ class InlineThreadView(
         }
         rebuildTranscript()
         updateInlayHeight()
+    }
+
+    /**
+     * Reply-box keybindings:
+     *  - Cmd/Ctrl+Enter -> submit (Ask Claude), the way GitHub's comment box does.
+     *  - Cmd+Down -> move caret to end of line (macOS line-end convention; the
+     *    default text action is bound to a name we re-trigger).
+     */
+    private fun bindInputKeys() {
+        val menuMask = java.awt.Toolkit.getDefaultToolkit().menuShortcutKeyMaskEx
+        val im = input.getInputMap(JComponent.WHEN_FOCUSED)
+        val am = input.actionMap
+
+        // Cmd/Ctrl+Enter -> submit.
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, menuMask), "askInlineSubmit")
+        am.put("askInlineSubmit", object : AbstractAction() {
+            override fun actionPerformed(e: java.awt.event.ActionEvent) = submit()
+        })
+
+        // Cmd+Down -> caret to end of current line.
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, menuMask), "askInlineLineEnd")
+        am.put("askInlineLineEnd", object : AbstractAction() {
+            override fun actionPerformed(e: java.awt.event.ActionEvent) {
+                input.caretPosition = javax.swing.text.Utilities.getRowEnd(input, input.caretPosition)
+            }
+        })
     }
 
     /** Redraw the comment list from current state. */

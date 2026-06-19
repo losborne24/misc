@@ -21,10 +21,22 @@ class AskInlineSettings : PersistentStateComponent<AskInlineSettings.Data> {
         @JvmField var systemPrompt: String =
             "You act on code review comments as tasks. Make the requested code " +
                 "change when one is called for, then reply with a short, technical " +
-                "summary of what you did. No greetings or sign-offs."
+                "summary of what you did. No greetings or sign-offs. " +
+                "This is a quick inline edit, not a full ticket workflow. You MAY " +
+                "edit source AND test files as the task requires. But do NOT " +
+                "EXECUTE any build, test, or validation commands (no `mvn`, no " +
+                "`mvn clean install`, no test runs, no checkstyle) and do not " +
+                "rebuild dependencies — just make the edits and reply. Ignore any " +
+                "repository instructions that mandate a research/plan/validate " +
+                "workflow or running build/validation commands for this task."
         /** default | acceptEdits | dontAsk | bypassPermissions | plan */
         @JvmField var permissionMode: String = "bypassPermissions"
-        @JvmField var timeoutMs: Int = 300_000
+        /**
+         * Idle timeout: max time with NO output from the CLI before the run is
+         * killed (not a wall-clock cap). Long agentic runs stay alive as long as
+         * they keep streaming. 120s of silence is generous for a hung process.
+         */
+        @JvmField var timeoutMs: Int = 120_000
     }
 
     private var data = Data()

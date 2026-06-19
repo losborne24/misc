@@ -79,16 +79,34 @@ class HoverAddGutter(
 
     private fun startThread(line: Int) {
         clear()
+
+        // If the click line falls inside an active multi-line selection, anchor
+        // the thread to the whole selected range; otherwise just the one line.
+        val sel = editor.selectionModel
+        val doc = editor.document
+        var start = line
+        var end = line
+        if (sel.hasSelection()) {
+            val selStart = doc.getLineNumber(sel.selectionStart)
+            // selectionEnd at a line start (offset == lineStart) means the line
+            // isn't really included — back off one line in that case.
+            val rawEnd = doc.getLineNumber(sel.selectionEnd)
+            val selEnd =
+                if (rawEnd > selStart && sel.selectionEnd == doc.getLineStartOffset(rawEnd)) rawEnd - 1
+                else rawEnd
+            if (line in selStart..selEnd) { start = selStart; end = selEnd }
+        }
+
         val state = ThreadState().apply {
             id = UUID.randomUUID().toString()
             filePath = relPath
-            startLine = line
-            endLine = line
+            startLine = start
+            endLine = end
         }
         AskInlineStore.getInstance(project).add(state)
 
         val controller = ThreadController.getInstance(project)
-        val hl = addCommentGutter(editor, line, line, state) { ed, st ->
+        val hl = addCommentGutter(editor, start, end, state) { ed, st ->
             controller.toggleThread(ed, st)
         }
         ThreadRegistry.getInstance(project).add(editor, RuntimeThread(state, hl))
