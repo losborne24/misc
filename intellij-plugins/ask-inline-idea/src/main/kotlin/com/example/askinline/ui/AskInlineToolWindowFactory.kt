@@ -72,7 +72,10 @@ class AskInlineToolWindowFactory : ToolWindowFactory {
         rebuild(project)
     }
 
-    /** Open the selected thread's file and put the caret on its start line. */
+    /**
+     * Open the selected thread's file, put the caret on its start line, then
+     * expand the inline comment card there — the VS Code revealThread behavior.
+     */
     private fun navigate(project: Project, tree: Tree) {
         val node = tree.lastSelectedPathComponent as? DefaultMutableTreeNode ?: return
         val data = node.userObject as? ThreadNodeData ?: return
@@ -81,9 +84,11 @@ class AskInlineToolWindowFactory : ToolWindowFactory {
         val absPath = (project.basePath?.trimEnd('/') ?: "") + "/" + state.filePath
         val vf = LocalFileSystem.getInstance().findFileByPath(absPath) ?: return
         // OpenFileDescriptor is 0-based for line/column.
-        OpenFileDescriptor(project, vf, state.startLine, 0)
-            .navigate(true) // requestFocus
-        FileEditorManager.getInstance(project) // ensure manager initialized
+        val descriptor = OpenFileDescriptor(project, vf, state.startLine, 0)
+        val fem = FileEditorManager.getInstance(project)
+        val editor = fem.openTextEditor(descriptor, true) ?: return // requestFocus
+        // Embed (or expand) the inline card for this thread.
+        ThreadController.getInstance(project).showThread(editor, state)
     }
 
     /** Rebuild the tree from current state. Files grouped, threads under each. */

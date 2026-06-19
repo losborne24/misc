@@ -69,6 +69,17 @@ class InlineThreadView(
     private val cardBorder = JBColor(Color(0xD0D7DE), Color(0x4E5157))
     private val headerBg = JBColor(Color(0xF6F8FA), Color(0x323438))
     private val claudeHeaderBg = JBColor(Color(0xEAF1FB), Color(0x2E3A4A))
+    private val inputAccent = JBColor(Color(0x3592C4), Color(0x3592C4))
+
+    // Input border: 1px line + inner padding. Accent-colored when focused.
+    private val idleInputBorder = BorderFactory.createCompoundBorder(
+        BorderFactory.createLineBorder(JBColor.border()),
+        JBUI.Borders.empty(4, 6),
+    )
+    private val focusInputBorder = BorderFactory.createCompoundBorder(
+        BorderFactory.createLineBorder(inputAccent),
+        JBUI.Borders.empty(4, 6),
+    )
 
     init {
         buildCard()
@@ -147,10 +158,25 @@ class InlineThreadView(
         collapsed = !collapsed
         transcript.isVisible = !collapsed
         replyRow.isVisible = !collapsed
+        if (statusRow.isVisible || !collapsed) statusRow.isVisible = !collapsed && statusLabel.text.isNotEmpty()
+        headerStrut.isVisible = !collapsed
+        // Tighten chrome to a single bar when collapsed.
+        root.border = if (collapsed) {
+            BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border()),
+                JBUI.Borders.empty(1, 6),
+            )
+        } else {
+            BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border()),
+                JBUI.Borders.empty(6),
+            )
+        }
         updateInlayHeight()
     }
 
     private lateinit var replyRow: JComponent
+    private lateinit var headerStrut: Component
 
     private fun buildCard() {
         root.border = BorderFactory.createCompoundBorder(
@@ -191,6 +217,12 @@ class InlineThreadView(
         val plus = iconButton(AllIcons.General.Add, "Add comment") { submit() }
         ask.addActionListener { submit() }
         input.cursor = Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR)
+        // Focus highlight: accent border when typing, subtle border otherwise.
+        input.border = idleInputBorder
+        input.addFocusListener(object : java.awt.event.FocusListener {
+            override fun focusGained(e: java.awt.event.FocusEvent) { input.border = focusInputBorder }
+            override fun focusLost(e: java.awt.event.FocusEvent) { input.border = idleInputBorder }
+        })
         bindInputKeys()
         replyRow = JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -220,7 +252,8 @@ class InlineThreadView(
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
             add(header)
-            add(Box.createVerticalStrut(4))
+            headerStrut = Box.createVerticalStrut(4)
+            add(headerStrut)
             add(transcript)
             add(statusRow)
             add(replyRow)
