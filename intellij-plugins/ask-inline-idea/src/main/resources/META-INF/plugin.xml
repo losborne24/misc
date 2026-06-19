@@ -1,0 +1,53 @@
+<idea-plugin>
+    <id>com.example.ask-inline-idea</id>
+    <name>Ask Inline</name>
+    <vendor>local</vendor>
+    <description><![CDATA[
+        Comment on any line to hand the task to the Claude Code CLI — it edits the
+        code and replies inline. IntelliJ port of the Ask Inline VS Code extension.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- App-level settings store (claude bin, model, permission mode, …). -->
+        <applicationService
+            serviceImplementation="com.example.askinline.state.AskInlineSettings"/>
+
+        <!-- Per-project persisted threads (.idea/askInline.xml). -->
+        <projectService
+            serviceImplementation="com.example.askinline.state.AskInlineStore"/>
+
+        <!-- Per-project runtime registry of live editor handles. -->
+        <projectService
+            serviceImplementation="com.example.askinline.runtime.ThreadRegistry"/>
+
+        <!-- Rebuilds gutter icons/inlays when editors open; syncs on close. -->
+        <editorFactoryListener
+            implementation="com.example.askinline.runtime.AskInlineEditorListener"/>
+
+        <!-- Side-panel overview (files → threads → activity). -->
+        <toolWindow
+            id="Ask Inline"
+            anchor="right"
+            icon="AllIcons.Toolwindows.ToolWindowMessages"
+            factoryClass="com.example.askinline.ui.AskInlineToolWindowFactory"/>
+
+        <!-- Settings UI under Tools > Ask Inline. -->
+        <applicationConfigurable
+            parentId="tools"
+            instance="com.example.askinline.ui.AskInlineConfigurable"
+            id="com.example.askinline.settings"
+            displayName="Ask Inline"/>
+    </extensions>
+
+    <actions>
+        <action id="askInline.ask"
+                class="com.example.askinline.ui.AskAction"
+                text="Ask Claude Here"
+                description="Start a comment thread on the current line">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt A"/>
+        </action>
+    </actions>
+</idea-plugin>

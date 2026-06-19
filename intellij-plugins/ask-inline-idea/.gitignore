@@ -1,0 +1,9 @@
+.gradle/
+build/
+.idea/
+*.iml
+out/
+.certs/
+.intellijPlatform/
+# Stray jars produced in the project root by some tasks (real artifacts go to build/).
+/*.jar
